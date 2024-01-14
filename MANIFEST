@@ -1,0 +1,9 @@
+lib/POE/Wheel/Run/DaemonHelper.pm
+Makefile.PL
+README.md
+LICENSE
+Changes
+t/manifest.t
+t/pod-coverage.t
+t/00-load.t
+t/pod.t
