@@ -10,7 +10,7 @@ use Sys::Syslog;
 
 =head1 NAME
 
-POE::Wheel::Run::DaemonHelper - 
+POE::Wheel::Run::DaemonHelper - Helper for the POE::Wheel::Run for easy controlling logging of stdout/err as well as restarting with backoff.
 
 =head1 VERSION
 
@@ -32,15 +32,16 @@ our $VERSION = '0.0.1';
     my $dh = POE::Wheel::Run::DaemonHelper->new(
 	    program           => $program,
 	    status_syslog     => 1,
+        restart_ctl       => 1,
 	    status_print      => 1,
         status_print_warn => 1,
-        restart_ctl       => 1,
+        # this one will be ignored as it will already be warning for print
+        status_syslog_warn => 1,
     );
 
     $dh->create_session;
 
     POE::Kernel->run();
-
 
 =head1 METHODS
 

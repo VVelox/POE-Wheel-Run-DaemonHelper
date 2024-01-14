@@ -17,8 +17,10 @@ my %WriteMakefileArgs = (
 		'Test::More' => '0',
 	},
 	PREREQ_PM => {
-		'POE::Wheel::Run'    => '0',
+		'POE'                => '0',
 		'Algorithm::Backoff' => '0',
+		'Error::Helper'      => '0',
+		'Sys::Syslog'        => '0',
 	},
 	dist  => { COMPRESS => 'gzip -9f', SUFFIX => 'gz', },
 	clean => { FILES    => 'POE-Wheel-Run-DaemonHelper-*' },
