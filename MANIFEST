@@ -6,4 +6,5 @@ Changes
 t/manifest.t
 t/00-load.t
 t/pod.t
+t/early.t
 MANIFEST

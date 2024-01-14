@@ -171,10 +171,10 @@ sub new {
 				return;
 			}
 
-			if ( $ints->{$arg} && $opts{arg} !~ /^[0-9]+$/ ) {
+			if ( $ints->{$arg} && $opts{$arg} !~ /^[0-9]+$/ ) {
 				$self->{perror}      = 1;
 				$self->{error}       = 3;
-				$self->{errorString} = $arg . ' is "' . $opts{arg} . '" and does not match /^[0-9]+$/';
+				$self->{errorString} = $arg . ' is "' . $opts{$arg} . '" and does not match /^[0-9]+$/';
 				$self->warn;
 				return;
 			}
