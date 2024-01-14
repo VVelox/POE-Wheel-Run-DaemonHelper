@@ -22,16 +22,27 @@ our $VERSION = '0.0.1';
 
 =head1 SYNOPSIS
 
-Quick summary of what the module does.
-
-Perhaps a little code snippet.
-
+    use strict;
+    use warnings;
     use POE::Wheel::Run::DaemonHelper;
+    use POE;
 
-    my $foo = POE::Wheel::Run::DaemonHelper->new();
-    ...
+    my $program = 'sleep 1; echo test; derp derp derp';
 
-=head1 SUBROUTINES/METHODS
+    my $dh = POE::Wheel::Run::DaemonHelper->new(
+	    program           => $program,
+	    status_syslog     => 1,
+	    status_print      => 1,
+        status_print_warn => 1,
+        restart_ctl       => 1,
+    );
+
+    $dh->create_session;
+
+    POE::Kernel->run();
+
+
+=head1 METHODS
 
 =head2 new
 
@@ -40,25 +51,46 @@ Required args as below.
     - program :: The program to execute. Either a string or array.
         Default :: undef
 
+    - restart_ctl :: Control if it will be restarted if it dies.
+        Default :: 1
+
 Optional args are as below.
 
     - syslog_name :: The name to use when sending stuff to syslog.
         Default :: DaemonHelper
 
-    - syslog_facility :: The syslog facility to log to.
-        Default :: daemon
-
-    - stdout_prepend :: What to prepend to STDOUT lines sent to syslog.
-        Default :: ''
-
-    - stderr_prepend :: What to prepend to STDERR lines sent to syslog.
-        Default :: Error:
+The following optional args control the backoff. Backoff is handled by
+L<Algorithm::Backoff::Exponential> with consider_actual_delay and delay_on_success
+set to true. The following are passed to it.
 
     - max_delay :: Max backoff delay in seconds when a program exits quickly.
         Default :: 90
 
     - initial_delay :: Initial backoff amount.
         Default :: 2
+
+The following optional args control the how the log_message method behaves.
+
+    - syslog_facility :: The syslog facility to log to.
+        Default :: daemon
+
+    - stdout_prepend :: What to prepend to STDOUT lines sent for status logging.
+        Default :: Out:
+
+    - stderr_prepend :: What to prepend to STDERR lines sent to status logging.
+        Default :: Err:
+
+    - status_print :: Print statuses messages to stdout.
+        Default :: 0
+
+    - status_print_warn :: For when error is true, use warn.
+        Default :: 0
+
+    - status_syslog :: Send status messages to syslog
+        Default :: 1
+
+    - status_syslog_warn :: Warn for error messages going to syslog. Warn will only be used once.
+        Default :: 0
 
 =cut
 
@@ -81,19 +113,25 @@ sub new {
 			fatal_flags      => {},
 			perror_not_fatal => 0,
 		},
-		program         => undef,
-		syslog_name     => 'DaemonHelper',
-		syslog_facility => 'daemon',
-		stdout_prepend  => '',
-		stderr_prepend  => 'Error: ',
-		max_delay       => 90,
-		initial_delay   => 2,
-		session_created => 0,
-		started         => undef,
-		started_at      => undef,
-		no_restart      => 0,
-		backoff         => undef,
-		pid             => undef,
+		program            => undef,
+		syslog_name        => 'DaemonHelper',
+		syslog_facility    => 'daemon',
+		stdout_prepend     => 'Out: ',
+		stderr_prepend     => 'Err: ',
+		max_delay          => 90,
+		initial_delay      => 2,
+		session_created    => 0,
+		started            => undef,
+		started_at         => undef,
+		restart_ctl        => 1,
+		backoff            => undef,
+		pid                => undef,
+		status_syslog      => 1,
+		status_syslog_warn => 0,
+		status_print       => 0,
+		status_print_warn  => 0,
+		append_pid         => 0,
+		pid_prepend        => 1,
 	};
 	bless $self;
 
@@ -115,13 +153,16 @@ sub new {
 	my $ints = {
 		'max_delay'     => 1,
 		'initial_delay' => 1,
-		'short_run'     => 1,
 	};
 
-	my @args = [ 'syslog_name', 'syslog_facility', 'stdout_prepend', 'stderr_prepend', 'max_delay', 'initial_delay' ];
+	my @args = (
+		'syslog_name',       'syslog_facility',    'stdout_prepend', 'stderr_prepend',
+		'max_delay',         'initial_delay',      'status_syslog',  'status_print',
+		'status_print_warn', 'status_syslog_warn', 'restart_ctl'
+	);
 	foreach my $arg (@args) {
 		if ( defined( $opts{$arg} ) ) {
-			if ( ref( $opts{$arg} ) ne 'ARRAY' ) {
+			if ( ref( $opts{$arg} ) ne '' ) {
 				$self->{perror}      = 1;
 				$self->{error}       = 2;
 				$self->{errorString} = 'ref for ' . $arg . ' is ' . ref( $opts{$arg} ) . ', but should be ""';
@@ -137,7 +178,7 @@ sub new {
 				return;
 			}
 
-			$self->{$arg} = $opts{arg};
+			$self->{$arg} = $opts{$arg};
 		} ## end if ( defined( $opts{$arg} ) )
 	} ## end foreach my $arg (@args)
 
@@ -159,6 +200,8 @@ sub new {
 =head2 create_session
 
 This creates the new POE session that will handle this.
+
+    $dh->create_session;
 
 =cut
 
@@ -183,6 +226,11 @@ sub create_session {
 
 =head2 log_message
 
+Logs a message. Printing to stdout or sending to syslog is controlled via
+the status_syslog and status_print values passed to new.
+
+
+
     - status :: What to log.
       Default :: undef
 
@@ -205,17 +253,34 @@ sub log_message {
 		$level = 'err';
 	}
 
-	eval {
-		openlog( $self->{syslog_name}, '', $self->{syslog_facility} );
-		syslog( $level, $opts{status} );
-		closelog();
-	};
-	if ($@) {
-		warn( 'Errored logging message... ' . $@ );
+	# used for making sure we only use warn once.
+	my $warned = 0;
+
+	if ( $self->{status_print} ) {
+		if ( $self->{status_print_warn} && $opts{error} ) {
+			warn( $self->{syslog_name} . '[' . $$ . '] ' . $opts{status} );
+			$warned = 1;
+		} else {
+			print $self->{syslog_name} . '[' . $$ . '] ' . $opts{status} . "\n";
+		}
 	}
+
+	if ( $self->{status_syslog} ) {
+		if ( $self->{status_syslog_warn} && $opts{error} && !$warned ) {
+			warn( $self->{syslog_name} . '[' . $$ . '] ' . $opts{status} );
+		}
+		eval {
+			openlog( $self->{syslog_name}, '', $self->{syslog_facility} );
+			syslog( $level, $opts{status} );
+			closelog();
+		};
+		if ($@) {
+			warn( 'Errored logging message... ' . $@ );
+		}
+	} ## end if ( $self->{status_syslog} )
 } ## end sub log_message
 
-=head2 started_at
+=head2 pid
 
 Returns the PID of the process or undef if it
 has not been started.
@@ -234,6 +299,38 @@ sub pid {
 
 	return $self->{pid};
 }
+
+=head2 restart_ctl
+
+Controls if the process will be restarted when it exits or not.
+
+    - restart_ctl :: A Perl boolean that if true the process will
+            be restarted when it exits.
+        Default :: undef
+
+    # next time it exits, it won't be restarted
+    $dh->restart_ctl(restart_ctl=>0);
+
+If restart_ctl is undef, the current value is returned.
+
+    my $restart_ctl = $dh->restart_ctl;
+    if ($restart_ctl) {
+        print "Will be restarted when it dies.\n";
+    }
+
+=cut
+
+sub restart_ctl {
+	my ( $self, %opts ) = @_;
+
+	$self->errorblank;
+
+	if ( !defined( $opts{restart_ctl} ) ) {
+		return $self->{restart_ctl};
+	}
+
+	$self->{restart_ctl} = $opts{restart_ctl};
+} ## end sub restart_ctl
 
 =head2 started
 
@@ -306,15 +403,25 @@ sub on_child_stdout {
 	my ( $stdout_line, $wheel_id ) = @_[ ARG0, ARG1 ];
 	my $child = $_[HEAP]{children_by_wid}{$wheel_id};
 
-	$_[HEAP]{self}->log_message( status => $_[HEAP]{self}->{stdout_prepend} . $stdout_line );
-}
+	my $prepend = $_[HEAP]{self}->{stdout_prepend};
+	if ( $_[HEAP]{self}->{pid_prepend} ) {
+		$prepend = $_[HEAP]{self}->{pid} . ' ' . $prepend;
+	}
+
+	$_[HEAP]{self}->log_message( status => $prepend . $stdout_line );
+} ## end sub on_child_stdout
 
 sub on_child_stderr {
 	my ( $stderr_line, $wheel_id ) = @_[ ARG0, ARG1 ];
 	my $child = $_[HEAP]{children_by_wid}{$wheel_id};
 
-	$_[HEAP]{self}->log_message( error => 1, status => $_[HEAP]{self}->{stderr_prepend} . $stderr_line );
-}
+	my $prepend = $_[HEAP]{self}->{stderr_prepend};
+	if ( $_[HEAP]{self}->{pid_prepend} ) {
+		$prepend = $_[HEAP]{self}->{pid} . ' ' . $prepend;
+	}
+
+	$_[HEAP]{self}->log_message( error => 1, status => $prepend . $stderr_line );
+} ## end sub on_child_stderr
 
 sub on_child_close {
 	my $wheel_id = $_[ARG0];
@@ -349,9 +456,13 @@ sub on_child_signal {
 		$secs = $_[HEAP]{self}{backoff}->failure;
 	}
 
-	$_[HEAP]{self}->log_message( status => 'restarting in ' . $secs . ' seconds' );
+	if ( $_[HEAP]{self}->{restart_ctl} ) {
+		$_[HEAP]{self}->log_message( status => 'restarting in ' . $secs . ' seconds' );
 
-	$_[KERNEL]->delay( _start => 3 );
+		$_[KERNEL]->delay( _start => 3 );
+	} else {
+		$_[HEAP]{self}->log_message( status => 'restart_ctl false... not restarting' );
+	}
 } ## end sub on_child_signal
 
 =head1 ERROR CODES / FLAGS
