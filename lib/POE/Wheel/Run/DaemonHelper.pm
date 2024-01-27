@@ -7,6 +7,7 @@ use POE qw( Wheel::Run );
 use base 'Error::Helper';
 use Algorithm::Backoff::Exponential;
 use Sys::Syslog;
+use File::Slurp qw(append_file read_file);
 
 =head1 NAME
 
@@ -14,11 +15,11 @@ POE::Wheel::Run::DaemonHelper - Helper for the POE::Wheel::Run for easy controll
 
 =head1 VERSION
 
-Version 0.0.1
+Version 0.1.0
 
 =cut
 
-our $VERSION = '0.0.1';
+our $VERSION = '0.1.0';
 
 =head1 SYNOPSIS
 
@@ -59,6 +60,10 @@ Optional args are as below.
 
     - syslog_name :: The name to use when sending stuff to syslog.
         Default :: DaemonHelper
+
+    - pid_file :: The file to check for additional PIDs. Used for for
+             with the $dh->pids and $dh->pid_from_pid_file.
+        Default :: undef
 
 The following optional args control the backoff. Backoff is handled by
 L<Algorithm::Backoff::Exponential> with consider_actual_delay and delay_on_success
@@ -110,6 +115,7 @@ sub new {
 				1 => 'invalidProgram',
 				2 => 'optsBadRef',
 				3 => 'optsNotInt',
+				4 => 'readPidFileFailed',
 			},
 			fatal_flags      => {},
 			perror_not_fatal => 0,
@@ -286,6 +292,9 @@ sub log_message {
 Returns the PID of the process or undef if it
 has not been started.
 
+This just return the child PID. Will not return
+the PID from the PID file if one is set.
+
     my $pid = $dh->pid;
     if ($pid){
         print 'PID is '.$started_at."\n";
@@ -300,6 +309,89 @@ sub pid {
 
 	return $self->{pid};
 }
+
+=head2 pids
+
+Returns the child PID and PID from the PID file if one is specified.
+
+This calls pid_from_pid_file via eval and ignores if it fails. If you
+want to check to see if that errored or not, check to see if error 4,
+readPidFileFailed, was set or use both pid and pid_from_pid_file.
+
+    my @pids = $dh->pids;
+    print 'PIDs are ' . join(', ', @pids) . "\n";
+
+=cut
+
+sub pids {
+	my ($self) = @_;
+
+	$self->errorblank;
+
+	my @pids;
+
+	if ( defined( $self->{pid} ) ) {
+		push( @pids, $self->{pid} );
+	}
+
+	my $pid_from_pid_file;
+	eval { $pid_from_pid_file = $self->pid_from_pid_file; };
+	if ( defined($pid_from_pid_file) ) {
+		push( @pids, $pid_from_pid_file );
+	}
+
+	return @pids;
+} ## end sub pids
+
+=head2 pid_from_pid_file
+
+Reads the PID from the PID file.
+
+If one was not specified or the file does not exist, it returns undef.
+
+Will throw error 4, readPidFileFailed, if it could not read it.
+
+After reading it, it will return the first integer.
+
+    my $pid;
+    eval{ $pid = $dh->pid_from_pid_file; };
+    if ($@) {
+        print "Could not read PID file\n";
+    } elsif (defined ($pid)) {
+        print 'PID: ' . $pid . "\n";
+    }
+
+=cut
+
+sub pid_from_pid_file {
+	my ($self) = @_;
+
+	$self->errorblank;
+
+	if ( !defined( $self->{pid_file} ) ) {
+		return undef;
+	} elsif ( !-f $self->{pid_file} ) {
+		return undef;
+	}
+
+	my $raw_pid_file;
+	eval { $raw_pid_file = read_file( $self->{pid_file} ); };
+	if ($@) {
+		$self->{error}       = 4;
+		$self->{errorString} = 'Failed to read PID file, "' . $self->{pid_file} . '" ... ' . $@;
+		$self->warn;
+		return;
+	}
+
+	my @raw_pid_file_split = split( /\n/, $raw_pid_file );
+	foreach my $line (@raw_pid_file_split) {
+		if ( $line =~ /^[0-9]+$/ ) {
+			return $line;
+		}
+	}
+
+	return undef;
+} ## end sub pid_from_pid_file
 
 =head2 restart_ctl
 
@@ -317,6 +409,8 @@ If restart_ctl is undef, the current value is returned.
     my $restart_ctl = $dh->restart_ctl;
     if ($restart_ctl) {
         print "Will be restarted when it dies.\n";
+    } else {
+        print "Will NOT be restarted when it dies.\n";
     }
 
 =cut
@@ -479,6 +573,10 @@ The opts has a invlaid ref.
 =head2 3, optsNotInt
 
 The opts in question should be a int.
+
+=head2 4, readPidFileFailed
+
+Failed to read the PID file.
 
 =head1 AUTHOR
 
