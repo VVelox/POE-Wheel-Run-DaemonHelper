@@ -52,8 +52,8 @@ eval {
 	$dh->create_session;
 
 	# make sure log_message does not die
-	$dh->log_message(status=>'test');
-	$dh->log_message(error=>1, status=>'test');
+	$dh->log_message( status => 'test' );
+	$dh->log_message( error  => 1, status => 'test warning log message' );
 
 	$worked = 1;
 };
