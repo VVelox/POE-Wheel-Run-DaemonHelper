@@ -65,6 +65,9 @@ Optional args are as below.
              with the $dh->pids and $dh->pid_from_pid_file.
         Default :: undef
 
+    - default_kill_signal :: The default signal to use for kill.
+        Default :: TERM
+
 The following optional args control the backoff. Backoff is handled by
 L<Algorithm::Backoff::Exponential> with consider_actual_delay and delay_on_success
 set to true. The following are passed to it.
@@ -116,29 +119,32 @@ sub new {
 				2 => 'optsBadRef',
 				3 => 'optsNotInt',
 				4 => 'readPidFileFailed',
+				5 => 'killFailed',
 			},
 			fatal_flags      => {},
 			perror_not_fatal => 0,
 		},
-		program            => undef,
-		syslog_name        => 'DaemonHelper',
-		syslog_facility    => 'daemon',
-		stdout_prepend     => 'Out: ',
-		stderr_prepend     => 'Err: ',
-		max_delay          => 90,
-		initial_delay      => 2,
-		session_created    => 0,
-		started            => undef,
-		started_at         => undef,
-		restart_ctl        => 1,
-		backoff            => undef,
-		pid                => undef,
-		status_syslog      => 1,
-		status_syslog_warn => 0,
-		status_print       => 0,
-		status_print_warn  => 0,
-		append_pid         => 0,
-		pid_prepend        => 1,
+		program             => undef,
+		syslog_name         => 'DaemonHelper',
+		syslog_facility     => 'daemon',
+		stdout_prepend      => 'Out: ',
+		stderr_prepend      => 'Err: ',
+		max_delay           => 90,
+		initial_delay       => 2,
+		session_created     => 0,
+		started             => undef,
+		started_at          => undef,
+		restart_ctl         => 1,
+		backoff             => undef,
+		pid                 => undef,
+		status_syslog       => 1,
+		status_syslog_warn  => 0,
+		status_print        => 0,
+		status_print_warn   => 0,
+		append_pid          => 0,
+		pid_prepend         => 1,
+		pid_file            => undef,
+		default_kill_signal => 'TERM',
 	};
 	bless $self;
 
@@ -165,7 +171,8 @@ sub new {
 	my @args = (
 		'syslog_name',       'syslog_facility',    'stdout_prepend', 'stderr_prepend',
 		'max_delay',         'initial_delay',      'status_syslog',  'status_print',
-		'status_print_warn', 'status_syslog_warn', 'restart_ctl'
+		'status_print_warn', 'status_syslog_warn', 'restart_ctl',    'pid_file',
+		'default_kill_signal',
 	);
 	foreach my $arg (@args) {
 		if ( defined( $opts{$arg} ) ) {
@@ -286,6 +293,68 @@ sub log_message {
 		}
 	} ## end if ( $self->{status_syslog} )
 } ## end sub log_message
+
+=head2 kill
+
+Sends the specified signal to the PIDs.
+
+Returns undef if there are no PIDs, meaning it is not running.
+
+If the signal is not supported, the error 5, killFailed, is set.
+
+For understanding the return value, see the docs for the Perl
+function kill.
+
+If you want to see the available signals,
+check L<Config> and $Config{sig_name}.
+
+    - signal :: The signal to send. The default is conntrolled
+        by the setting of the default_kill_signal setting.
+
+    # send the default signal
+    my $count=$dh->kill;
+
+    # send the KILL signal
+    my $count;
+    eval{ $count=$dh->kill(signal=>'KILL'); };
+    if ($@ && $Error::Helper::errorFlag eq 'killFailed') {
+        die('Unkown kill signal used');
+    } elsif ($@) {
+        die($@);
+    } elsif ( $count < 1 ) {
+        die('Failed to kill any of the procs');
+    }
+    print $count . " procs signaled\n";
+
+=cut
+
+sub kill {
+	my ( $self, %opts ) = @_;
+
+	$self->errorblank;
+
+	if ( !defined( $opts{signal} ) ) {
+		$opts{signal} = $self->{default_kill_signal};
+	}
+
+	my @pids = $self->pids;
+
+	if ( !defined( $pids[0] ) ) {
+		return undef;
+	}
+
+	my $count;
+	eval { $count = kill $opts{signal}, @pids; };
+	if ($@) {
+		$self->{error} = 5;
+		$self->{errorString}
+			= 'Died trying to send kill signal "' . $opts{signal} . '" to pids ' . join( ',', @pids ) . ' ... ' . $@;
+		$self->warn;
+		return undef;
+	}
+
+	return $count;
+} ## end sub kill
 
 =head2 pid
 
@@ -577,6 +646,12 @@ The opts in question should be a int.
 =head2 4, readPidFileFailed
 
 Failed to read the PID file.
+
+=head2 5, killFailed
+
+Failed to run kill. This in general means a improper signal was specified.
+
+If you want to see the available signals, check L<Config> and $Config{sig_name}.
 
 =head1 AUTHOR
 
