@@ -106,6 +106,18 @@ The following optional args control the how the log_message method behaves.
 sub new {
 	my ( $blank, %opts ) = @_;
 
+	my $ints = {
+		'max_delay'     => 1,
+		'initial_delay' => 1,
+	};
+
+	my @args = (
+		'syslog_name',       'syslog_facility',    'stdout_prepend', 'stderr_prepend',
+		'max_delay',         'initial_delay',      'status_syslog',  'status_print',
+		'status_print_warn', 'status_syslog_warn', 'restart_ctl',    'pid_file',
+		'default_kill_signal',
+	);
+
 	my $self = {
 		perror        => undef,
 		error         => undef,
@@ -123,6 +135,10 @@ sub new {
 			},
 			fatal_flags      => {},
 			perror_not_fatal => 0,
+		},
+		args => {
+			ints => $ints,
+			args => \@args,
 		},
 		program             => undef,
 		syslog_name         => 'DaemonHelper',
@@ -163,17 +179,6 @@ sub new {
 	}
 	$self->{program} = $opts{program};
 
-	my $ints = {
-		'max_delay'     => 1,
-		'initial_delay' => 1,
-	};
-
-	my @args = (
-		'syslog_name',       'syslog_facility',    'stdout_prepend', 'stderr_prepend',
-		'max_delay',         'initial_delay',      'status_syslog',  'status_print',
-		'status_print_warn', 'status_syslog_warn', 'restart_ctl',    'pid_file',
-		'default_kill_signal',
-	);
 	foreach my $arg (@args) {
 		if ( defined( $opts{$arg} ) ) {
 			if ( ref( $opts{$arg} ) ne '' ) {
